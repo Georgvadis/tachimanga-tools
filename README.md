@@ -7,7 +7,7 @@
 ## Файлы проекта
 
 - `import/` — папка для исходных `.tmb`-бэкапов
-- `extract_tachimanga_links.py` — основной скрипт
+- `extract.py` — основной скрипт
 - `output/` — папка со сгенерированными файлами
 
 ## Что сохраняется в output
@@ -25,13 +25,13 @@
 Если в папке `import/` лежит единственный `.tmb`-файл, путь можно не указывать:
 
 ```bash
-./extract_tachimanga_links.py
+./extract.py
 ```
 
 Либо указать файл явно:
 
 ```bash
-./extract_tachimanga_links.py import/Tachimanga_backup_2026-03-31_22-18-14-998.tmb
+./extract.py import/Tachimanga_backup_2026-03-31_22-18-14-998.tmb
 ```
 
 По умолчанию результат будет записан в папку `output/`.
@@ -41,7 +41,7 @@
 Чтобы узнать, какие источники есть в бэкапе и сколько манги в библиотеке из каждого:
 
 ```bash
-./extract_tachimanga_links.py backup.tmb --list-sources
+./extract.py backup.tmb --list-sources
 ```
 
 ## Фильтрация
@@ -49,19 +49,19 @@
 Оставить только конкретные источники:
 
 ```bash
-./extract_tachimanga_links.py backup.tmb --source-name "E-Hentai" --source-name "Hitomi"
+./extract.py backup.tmb --source-name "E-Hentai" --source-name "Hitomi"
 ```
 
 Исключить определённые источники:
 
 ```bash
-./extract_tachimanga_links.py backup.tmb --exclude-source "Local source"
+./extract.py backup.tmb --exclude-source "Local source"
 ```
 
 Ограничить по доменам:
 
 ```bash
-./extract_tachimanga_links.py backup.tmb \
+./extract.py backup.tmb \
     --allowed-domain "e-hentai.org" --allowed-domain "exhentai.org"
 ```
 
@@ -70,7 +70,7 @@
 Можно передать свой путь к итоговому `.txt`:
 
 ```bash
-./extract_tachimanga_links.py backup.tmb --output custom/result.txt
+./extract.py backup.tmb --output custom/result.txt
 ```
 
 Если `--output` указывает на существующую папку, скрипт создаст в ней файл со стандартным именем.
