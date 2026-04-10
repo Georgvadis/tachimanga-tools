@@ -11,13 +11,11 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import urlparse
 
 
-DEFAULT_SOURCE_NAMES = ("E-Hentai", "Hitomi")
-DEFAULT_ALLOWED_DOMAINS = ("e-hentai.org", "exhentai.org", "hitomi.la")
 PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_IMPORT_DIRNAME = "import"
 DEFAULT_OUTPUT_DIRNAME = "output"
 
 
@@ -40,7 +38,15 @@ def parse_args() -> argparse.Namespace:
             "TachiManga .tmb backup."
         )
     )
-    parser.add_argument("backup", type=Path, help="Path to a TachiManga .tmb backup")
+    parser.add_argument(
+        "backup",
+        nargs="?",
+        type=Path,
+        help=(
+            "Path to a TachiManga .tmb backup. "
+            "If omitted, auto-picks the single .tmb file from import/."
+        ),
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -53,7 +59,16 @@ def parse_args() -> argparse.Namespace:
         dest="source_names",
         help=(
             "Source name to keep. Repeat the flag for multiple names. "
-            "Defaults to E-Hentai and Hitomi."
+            "By default all sources in the database are used."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-source",
+        action="append",
+        dest="exclude_sources",
+        help=(
+            "Source name to exclude. Repeat the flag for multiple names. "
+            "Applied after --source-name filtering."
         ),
     )
     parser.add_argument(
@@ -62,14 +77,29 @@ def parse_args() -> argparse.Namespace:
         dest="allowed_domains",
         help=(
             "Allowed domain for exported URLs. Repeat for multiple values. "
-            "Defaults to e-hentai.org, exhentai.org and hitomi.la."
+            "By default no domain filtering is applied."
         ),
+    )
+    parser.add_argument(
+        "--list-sources",
+        action="store_true",
+        help="List available sources in the backup and exit.",
     )
     return parser.parse_args()
 
 
+def find_single_backup() -> Path | None:
+    import_dir = PROJECT_ROOT / DEFAULT_IMPORT_DIRNAME
+    if not import_dir.is_dir():
+        return None
+    tmb_files = sorted(import_dir.glob("*.tmb"))
+    if len(tmb_files) == 1:
+        return tmb_files[0]
+    return None
+
+
 def pick_output_path(backup_path: Path, explicit_output: Path | None) -> Path:
-    default_name = f"{backup_path.stem}_ehentai_hitomi_by_category.txt"
+    default_name = f"{backup_path.stem}_all_sources_by_category.txt"
     if explicit_output is not None:
         if explicit_output.exists() and explicit_output.is_dir():
             return explicit_output / default_name
@@ -104,6 +134,20 @@ def connect_to_temp_db(db_bytes: bytes) -> tuple[tempfile.NamedTemporaryFile, sq
     return temp_file, connection
 
 
+def list_sources(connection: sqlite3.Connection) -> list[tuple[str, str, int]]:
+    rows = connection.execute(
+        """
+        SELECT s.name, s.lang, COUNT(*) AS cnt
+        FROM Manga AS m
+        JOIN Source AS s ON s.id = m.source
+        WHERE m.in_library = 1
+        GROUP BY s.id, s.name, s.lang
+        ORDER BY cnt DESC, s.name
+        """
+    )
+    return [(row["name"], row["lang"], int(row["cnt"])) for row in rows]
+
+
 def infer_url_prefixes(connection: sqlite3.Connection) -> dict[int, str]:
     prefix_counts: dict[int, collections.Counter[str]] = collections.defaultdict(collections.Counter)
     rows = connection.execute(
@@ -131,9 +175,12 @@ def infer_url_prefixes(connection: sqlite3.Connection) -> dict[int, str]:
     return inferred
 
 
-def load_rows(connection: sqlite3.Connection, source_names: Iterable[str]) -> list[MangaRow]:
-    placeholders = ", ".join("?" for _ in source_names)
-    query = f"""
+def load_rows(
+    connection: sqlite3.Connection,
+    source_names: tuple[str, ...] | None = None,
+    exclude_sources: tuple[str, ...] | None = None,
+) -> list[MangaRow]:
+    query = """
         SELECT
             c.name AS category_name,
             c."order" AS category_order,
@@ -149,9 +196,21 @@ def load_rows(connection: sqlite3.Connection, source_names: Iterable[str]) -> li
         JOIN Source AS s ON s.id = m.source
         JOIN Extension AS e ON e.id = s.extension
         WHERE m.in_library = 1
-          AND s.name IN ({placeholders})
-        ORDER BY c."order", c.id, m.title COLLATE NOCASE, m.id
     """
+    params: list[str] = []
+
+    if source_names:
+        placeholders = ", ".join("?" for _ in source_names)
+        query += f"  AND s.name IN ({placeholders})\n"
+        params.extend(source_names)
+
+    if exclude_sources:
+        placeholders = ", ".join("?" for _ in exclude_sources)
+        query += f"  AND s.name NOT IN ({placeholders})\n"
+        params.extend(exclude_sources)
+
+    query += '        ORDER BY c."order", c.id, m.title COLLATE NOCASE, m.id'
+
     return [
         MangaRow(
             category_name=row["category_name"],
@@ -163,7 +222,7 @@ def load_rows(connection: sqlite3.Connection, source_names: Iterable[str]) -> li
             real_url=(row["real_url"] or "").strip(),
             base_url=(row["base_url"] or "").strip(),
         )
-        for row in connection.execute(query, tuple(source_names))
+        for row in connection.execute(query, params)
     ]
 
 
@@ -202,10 +261,11 @@ def build_export(
     rows: list[MangaRow],
     inferred_prefixes: dict[int, str],
     allowed_domains: set[str],
-) -> tuple[dict[str, list[str]], list[str]]:
-    grouped: dict[str, list[str]] = collections.OrderedDict()
+) -> tuple[dict[str, list[tuple[str, str]]], list[str], collections.Counter[str]]:
+    grouped: dict[str, list[tuple[str, str]]] = collections.OrderedDict()
     seen_per_category: dict[str, set[str]] = collections.defaultdict(set)
     skipped: list[str] = []
+    source_counts: collections.Counter[str] = collections.Counter()
 
     for row in rows:
         resolved = resolve_manga_url(row, inferred_prefixes)
@@ -215,47 +275,83 @@ def build_export(
             )
             continue
 
-        host = normalized_host(resolved)
-        if host not in allowed_domains:
-            skipped.append(
-                f"{row.category_name}\t{row.source_name}\t{row.title}\tfiltered-domain\t{resolved}"
-            )
-            continue
+        if allowed_domains:
+            host = normalized_host(resolved)
+            if host not in allowed_domains:
+                skipped.append(
+                    f"{row.category_name}\t{row.source_name}\t{row.title}\tfiltered-domain\t{resolved}"
+                )
+                continue
 
         if resolved in seen_per_category[row.category_name]:
             continue
 
         seen_per_category[row.category_name].add(resolved)
-        grouped.setdefault(row.category_name, []).append(resolved)
+        grouped.setdefault(row.category_name, []).append((resolved, row.title))
+        source_counts[row.source_name] += 1
 
-    return grouped, skipped
+    return grouped, skipped, source_counts
 
 
 def render_output(
     backup_path: Path,
-    grouped: dict[str, list[str]],
-    source_names: Iterable[str],
-    allowed_domains: Iterable[str],
+    grouped: dict[str, list[tuple[str, str]]],
+    source_names: tuple[str, ...] | None,
+    allowed_domains: tuple[str, ...] | None,
+    source_counts: collections.Counter[str],
 ) -> str:
-    total_links = sum(len(urls) for urls in grouped.values())
+    total_links = sum(len(entries) for entries in grouped.values())
+
+    if source_counts:
+        source_stats = ", ".join(
+            f"{name} ({count})" for name, count in source_counts.most_common()
+        )
+    else:
+        source_stats = "none"
+
     lines = [
         f"# Backup: {backup_path.name}",
-        f"# Sources: {', '.join(source_names)}",
-        f"# Domains: {', '.join(allowed_domains)}",
+        f"# Sources: {', '.join(source_names) if source_names else 'all'}",
+        f"# Domains: {', '.join(allowed_domains) if allowed_domains else 'all'}",
         f"# Categories: {len(grouped)}",
         f"# Total links: {total_links}",
+        f"# By source: {source_stats}",
         "",
     ]
-    for category_name, urls in grouped.items():
-        lines.append(f"## {category_name} ({len(urls)})")
-        lines.extend(urls)
+    for category_name, entries in grouped.items():
+        lines.append(f"## {category_name} ({len(entries)})")
+        for url, title in entries:
+            lines.append(f"{url}  # {title}" if title else url)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
 def main() -> int:
     args = parse_args()
-    backup_path = args.backup.resolve()
+
+    backup_path: Path | None = args.backup
+    if backup_path is None:
+        backup_path = find_single_backup()
+        if backup_path is None:
+            import_dir = PROJECT_ROOT / DEFAULT_IMPORT_DIRNAME
+            tmb_files = sorted(import_dir.glob("*.tmb")) if import_dir.is_dir() else []
+            if not tmb_files:
+                print(
+                    f"No .tmb files found in {import_dir}. "
+                    "Provide a path as an argument.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Multiple .tmb files in {import_dir}:\n"
+                    + "\n".join(f"  {f.name}" for f in tmb_files)
+                    + "\nSpecify which one to use.",
+                    file=sys.stderr,
+                )
+            return 1
+        print(f"Auto-picked: {backup_path.name}")
+
+    backup_path = backup_path.resolve()
     output_path = pick_output_path(backup_path, args.output.resolve() if args.output else None)
     database_output_path = pick_database_output_path(backup_path, output_path)
 
@@ -263,15 +359,33 @@ def main() -> int:
         print(f"Backup file not found: {backup_path}", file=sys.stderr)
         return 1
 
-    source_names = tuple(args.source_names or DEFAULT_SOURCE_NAMES)
-    allowed_domains = tuple(domain.lower() for domain in (args.allowed_domains or DEFAULT_ALLOWED_DOMAINS))
+    source_names = tuple(args.source_names) if args.source_names else None
+    exclude_sources = tuple(args.exclude_sources) if args.exclude_sources else None
+    allowed_domains = (
+        tuple(domain.lower() for domain in args.allowed_domains)
+        if args.allowed_domains
+        else None
+    )
 
     db_bytes = load_nested_database_bytes(backup_path)
     temp_db, connection = connect_to_temp_db(db_bytes)
     try:
+        if args.list_sources:
+            sources = list_sources(connection)
+            if not sources:
+                print("No sources with manga in library.")
+            else:
+                max_name = max(len(name) for name, _, _ in sources)
+                max_lang = max(len(lang) for _, lang, _ in sources)
+                for name, lang, count in sources:
+                    print(f"  {name:<{max_name}}  ({lang:<{max_lang}})  — {count} in library")
+            return 0
+
         inferred_prefixes = infer_url_prefixes(connection)
-        rows = load_rows(connection, source_names)
-        grouped, skipped = build_export(rows, inferred_prefixes, set(allowed_domains))
+        rows = load_rows(connection, source_names, exclude_sources)
+        grouped, skipped, source_counts = build_export(
+            rows, inferred_prefixes, set(allowed_domains) if allowed_domains else set()
+        )
     finally:
         connection.close()
         temp_db.close()
@@ -279,7 +393,7 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     database_output_path.write_bytes(db_bytes)
     output_path.write_text(
-        render_output(backup_path, grouped, source_names, allowed_domains),
+        render_output(backup_path, grouped, source_names, allowed_domains, source_counts),
         encoding="utf-8",
     )
 
@@ -289,7 +403,7 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    total_links = sum(len(urls) for urls in grouped.values())
+    total_links = sum(len(entries) for entries in grouped.values())
     print(f"Wrote {total_links} links across {len(grouped)} categories to {output_path}")
     print(f"Saved extracted database to {database_output_path}")
     print(f"Skipped {len(skipped)} rows; details saved to {skipped_path}")
