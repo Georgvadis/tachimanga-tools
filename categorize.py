@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_IMPORT_DIRNAME = "import"
 DEFAULT_OUTPUT_DIRNAME = "output"
+DEFAULT_COOKIES_FILE = "cookies.txt"
 
 # Reading-status categories — manga in these is excluded from artist
 # categorization regardless of order or id.
@@ -85,7 +87,47 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Remove empty Artist1..N placeholder categories.",
     )
+    parser.add_argument(
+        "--cookies",
+        type=Path,
+        help=(
+            "Path to cookies file for ExHentai API access "
+            f"(default: {DEFAULT_COOKIES_FILE} in project root). "
+            "Format: key=value per line (igneous, ipb_member_id, ipb_pass_hash)."
+        ),
+    )
+    parser.add_argument(
+        "--no-api",
+        action="store_true",
+        help="Skip E-Hentai API lookup even if cookies file exists.",
+    )
     return parser.parse_args()
+
+
+def load_cookies(path: Path | None) -> dict[str, str] | None:
+    """
+    Load ExHentai cookies from a key=value file.
+
+    Returns a dict with igneous, ipb_member_id, ipb_pass_hash or None
+    if the file doesn't exist or required keys are missing/empty.
+    """
+    if path is None:
+        path = PROJECT_ROOT / DEFAULT_COOKIES_FILE
+    if not path.is_file():
+        return None
+    cookies: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        cookies[key.strip()] = value.strip()
+    required = ("igneous", "ipb_member_id", "ipb_pass_hash")
+    if all(cookies.get(k) for k in required):
+        return {k: cookies[k] for k in required}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +269,84 @@ def extract_artist_from_title(title: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# E-Hentai API
+# ---------------------------------------------------------------------------
+
+_EHENTAI_URL_RE = re.compile(
+    r"https?://(?:e[x-]hentai|exhentai)\.org/g/(\d+)/([a-f0-9]+)"
+)
+
+EHENTAI_API_URL = "https://api.e-hentai.org/api.php"
+EXHENTAI_API_URL = "https://exhentai.org/api.php"
+EHENTAI_BATCH_SIZE = 25
+EHENTAI_REQUEST_DELAY = 1.5  # seconds between API requests
+
+
+def parse_ehentai_gid_token(url: str) -> tuple[int, str] | None:
+    """Extract (gid, token) from an E-Hentai / ExHentai gallery URL."""
+    m = _EHENTAI_URL_RE.search(url)
+    if m:
+        return int(m.group(1)), m.group(2)
+    return None
+
+
+def fetch_ehentai_artists(
+    gid_token_list: list[tuple[int, str]],
+    cookies: dict[str, str] | None = None,
+) -> dict[int, list[str]]:
+    """
+    Fetch artist tags from E-Hentai API for a batch of galleries.
+
+    Returns {gid: [artist_name, ...]}.  Uses ExHentai endpoint when
+    cookies are provided, plain E-Hentai otherwise.
+    """
+    result: dict[int, list[str]] = {}
+    use_ex = bool(cookies)
+    api_url = EXHENTAI_API_URL if use_ex else EHENTAI_API_URL
+
+    for i in range(0, len(gid_token_list), EHENTAI_BATCH_SIZE):
+        batch = gid_token_list[i : i + EHENTAI_BATCH_SIZE]
+        payload = json.dumps({
+            "method": "gdata",
+            "gidlist": [[gid, token] for gid, token in batch],
+            "namespace": 1,
+        }).encode()
+
+        req = urllib.request.Request(
+            api_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        if cookies:
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+            req.add_header("Cookie", cookie_str)
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+        except Exception as exc:
+            print(f"  E-Hentai API error (batch {i // EHENTAI_BATCH_SIZE + 1}): {exc}",
+                  file=sys.stderr)
+            continue
+
+        for entry in data.get("gmetadata", []):
+            gid = int(entry["gid"])
+            artists = [
+                tag.split(":", 1)[1]
+                for tag in entry.get("tags", [])
+                if tag.startswith("artist:")
+            ]
+            if artists:
+                result[gid] = artists
+
+        # Rate-limit between batches.
+        if i + EHENTAI_BATCH_SIZE < len(gid_token_list):
+            time.sleep(EHENTAI_REQUEST_DELAY)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Database queries
 # ---------------------------------------------------------------------------
 
@@ -264,6 +384,7 @@ def get_artist_manga_mapping(
     conn: sqlite3.Connection,
     field: str,
     exclude_ids: set[int] | None = None,
+    ehentai_cookies: dict[str, str] | None = None,
 ) -> dict[str, list[int]]:
     """
     Return {canonical_artist: [manga_id, ...]} for manga in library.
@@ -315,12 +436,12 @@ def get_artist_manga_mapping(
             _add(val, mid)
             has_artist.add(mid)
 
-    # Fallback: extract artist from title "[Artist] ..." or "[Circle (Artist)] ..."
+    # Fallback: extract artist from title "[Artist] ..." or "(Event) [Artist] ..."
     for row in conn.execute(
         "SELECT id, title FROM Manga "
         "WHERE in_library = 1 AND TRIM(COALESCE(artist, '')) = '' "
         "  AND TRIM(COALESCE(author, '')) = '' "
-        "  AND title LIKE '[%'"
+        "  AND (title LIKE '[%' OR title LIKE '(%')"
     ):
         mid = int(row["id"])
         if mid in has_artist:
@@ -328,6 +449,44 @@ def get_artist_manga_mapping(
         parsed = extract_artist_from_title(row["title"])
         if parsed:
             _add(parsed, mid)
+            has_artist.add(mid)
+
+    # Fallback: E-Hentai / ExHentai API lookup for remaining unknowns.
+    if ehentai_cookies is not None:
+        covered_ids = has_artist | {
+            mid
+            for _, ids in seen.values()
+            for mid in ids
+        }
+        api_candidates: list[tuple[int, int, str]] = []  # (manga_id, gid, token)
+        for row in conn.execute(
+            "SELECT id, url, real_url FROM Manga "
+            "WHERE in_library = 1 AND TRIM(COALESCE(artist, '')) = '' "
+            "  AND TRIM(COALESCE(author, '')) = ''"
+        ):
+            mid = int(row["id"])
+            if mid in exclude_ids or mid in covered_ids:
+                continue
+            resolved = (row["real_url"] or row["url"] or "").strip()
+            parsed_url = parse_ehentai_gid_token(resolved)
+            if parsed_url:
+                api_candidates.append((mid, parsed_url[0], parsed_url[1]))
+
+        if api_candidates:
+            print(f"Fetching artist tags from E-Hentai API for {len(api_candidates)} galleries...")
+            gid_token_list = [(gid, token) for _, gid, token in api_candidates]
+            gid_to_manga: dict[int, int] = {gid: mid for mid, gid, _ in api_candidates}
+            api_results = fetch_ehentai_artists(gid_token_list, ehentai_cookies)
+            api_found = 0
+            for gid, artists in api_results.items():
+                mid = gid_to_manga.get(gid)
+                if mid is None:
+                    continue
+                # Use first artist as primary; join multiple with " | " for alias handling.
+                artist_str = " | ".join(artists) if len(artists) > 1 else artists[0]
+                _add(artist_str, mid)
+                api_found += 1
+            print(f"  API resolved artists for {api_found}/{len(api_candidates)} galleries.")
 
     return {canonical: ids for canonical, ids in seen.values()}
 
@@ -585,7 +744,19 @@ def main() -> int:
         categories = get_existing_categories(conn)
         cat_exact, cat_compact = build_category_lookup(categories)
         system_ids = get_system_manga_ids(conn)
-        artist_mapping = get_artist_manga_mapping(conn, args.field, exclude_ids=system_ids)
+        ehentai_cookies = None
+        if not args.no_api:
+            ehentai_cookies = load_cookies(
+                args.cookies.resolve() if args.cookies else None
+            )
+            if ehentai_cookies:
+                print("ExHentai cookies loaded — API lookup enabled.")
+            else:
+                print("No cookies found — E-Hentai API lookup skipped.")
+        artist_mapping = get_artist_manga_mapping(
+            conn, args.field, exclude_ids=system_ids,
+            ehentai_cookies=ehentai_cookies,
+        )
         existing_assignments = get_existing_assignments(conn)
 
         max_order = max((info["order"] for info in categories.values()), default=0)

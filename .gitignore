@@ -1,5 +1,7 @@
 import/*
 output/*
+cookies.txt
+__pycache__/
 
 !import/.gitkeep
 !output/.gitkeep
