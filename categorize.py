@@ -14,6 +14,7 @@ import collections
 import hashlib
 import io
 import json
+import re
 import sqlite3
 import sys
 import tempfile
@@ -196,6 +197,30 @@ def title_case_artist(name: str) -> str:
     return " ".join(word.capitalize() for word in name.split())
 
 
+# Regex: "[Circle (Artist)] ..." or "[Artist] ..."
+_TITLE_ARTIST_RE = re.compile(r"^\[([^\]]+)\]")
+_PAREN_ARTIST_RE = re.compile(r".+\(([^)]+)\)$")
+
+
+def extract_artist_from_title(title: str) -> str | None:
+    """
+    Try to extract artist name from a title like:
+      [Artist] Some Title
+      [Circle (Artist)] Some Title
+    Returns the artist string or None.
+    """
+    m = _TITLE_ARTIST_RE.match(title)
+    if not m:
+        return None
+    bracket = m.group(1).strip()
+    # [Circle (Artist)] → Artist
+    m2 = _PAREN_ARTIST_RE.match(bracket)
+    if m2:
+        return m2.group(1).strip()
+    # [Artist] → Artist
+    return bracket
+
+
 # ---------------------------------------------------------------------------
 # Database queries
 # ---------------------------------------------------------------------------
@@ -259,12 +284,18 @@ def get_artist_manga_mapping(
         else:
             seen[key] = (raw, [manga_id])
 
+    # Track manga IDs that already got an artist from a DB field,
+    # so the title fallback doesn't override them.
+    has_artist: set[int] = set()
+
     if field in ("artist", "both"):
         for row in conn.execute(
             "SELECT id, artist FROM Manga "
             "WHERE in_library = 1 AND TRIM(COALESCE(artist, '')) != ''"
         ):
-            _add(row["artist"].strip(), int(row["id"]))
+            mid = int(row["id"])
+            _add(row["artist"].strip(), mid)
+            has_artist.add(mid)
 
     if field in ("author", "both"):
         for row in conn.execute(
@@ -275,7 +306,23 @@ def get_artist_manga_mapping(
             # Skip publisher-style entries ("Издатель: ...")
             if val.startswith("Издатель:"):
                 continue
-            _add(val, int(row["id"]))
+            mid = int(row["id"])
+            _add(val, mid)
+            has_artist.add(mid)
+
+    # Fallback: extract artist from title "[Artist] ..." or "[Circle (Artist)] ..."
+    for row in conn.execute(
+        "SELECT id, title FROM Manga "
+        "WHERE in_library = 1 AND TRIM(COALESCE(artist, '')) = '' "
+        "  AND TRIM(COALESCE(author, '')) = '' "
+        "  AND title LIKE '[%'"
+    ):
+        mid = int(row["id"])
+        if mid in has_artist:
+            continue
+        parsed = extract_artist_from_title(row["title"])
+        if parsed:
+            _add(parsed, mid)
 
     return {canonical: ids for canonical, ids in seen.values()}
 
