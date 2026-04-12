@@ -280,6 +280,10 @@ EHENTAI_API_URL = "https://api.e-hentai.org/api.php"
 EXHENTAI_API_URL = "https://exhentai.org/api.php"
 EHENTAI_BATCH_SIZE = 25
 EHENTAI_REQUEST_DELAY = 1.5  # seconds between API requests
+EHENTAI_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def parse_ehentai_gid_token(url: str) -> tuple[int, str] | None:
@@ -312,17 +316,16 @@ def fetch_ehentai_artists(
             "namespace": 1,
         }).encode()
 
-        req = urllib.request.Request(
-            api_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": EHENTAI_USER_AGENT,
+        }
         if cookies:
-            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-            req.add_header("Cookie", cookie_str)
+            headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        req = urllib.request.Request(api_url, data=payload, headers=headers)
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read())
         except Exception as exc:
             print(f"  E-Hentai API error (batch {i // EHENTAI_BATCH_SIZE + 1}): {exc}",
