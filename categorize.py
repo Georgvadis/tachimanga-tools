@@ -83,11 +83,6 @@ def parse_args() -> argparse.Namespace:
         help="Show what would be done without modifying anything.",
     )
     parser.add_argument(
-        "--clean-placeholder",
-        action="store_true",
-        help="Remove empty Artist1..N placeholder categories.",
-    )
-    parser.add_argument(
         "--cookies",
         type=Path,
         help=(
@@ -573,7 +568,7 @@ def create_category(
         """
         INSERT INTO Category (name, "order", is_default, uuid, create_at, update_at,
                               is_delete, dirty, commit_id)
-        VALUES (?, ?, 0, ?, ?, ?, 0, 0, 0)
+        VALUES (?, ?, 0, ?, ?, ?, 0, 1, 0)
         """,
         (name, order, name, now_ms, now_ms),
     )
@@ -591,17 +586,19 @@ def insert_category_manga(
     )
 
 
-def delete_empty_placeholder_categories(conn: sqlite3.Connection) -> list[str]:
-    """Delete Artist1..N categories that have zero manga assigned."""
-    removed: list[str] = []
+def delete_empty_categories(conn: sqlite3.Connection) -> list[str]:
+    """Delete all non-system empty categories (zero manga assigned)."""
+    placeholders = ", ".join("?" for _ in SYSTEM_CATEGORIES)
     rows = conn.execute(
-        """
+        f"""
         SELECT c.id, c.name FROM Category c
-        WHERE c.name GLOB 'Artist[0-9]*'
-          AND c.is_delete = 0
+        WHERE c.is_delete = 0
+          AND c.name NOT IN ({placeholders})
           AND c.id NOT IN (SELECT category FROM CategoryManga)
-        """
+        """,
+        tuple(SYSTEM_CATEGORIES),
     ).fetchall()
+    removed: list[str] = []
     for row in rows:
         conn.execute("DELETE FROM Category WHERE id = ?", (row["id"],))
         removed.append(row["name"])
@@ -653,6 +650,16 @@ def clean_old_assignments(
             )
             affected_cats.add(cid)
             removed += 1
+
+    # Mark all affected categories (and target categories) as dirty for sync.
+    all_dirty_cats = affected_cats | {
+        cid for cids in manga_target_cats.values() for cid in cids
+    }
+    for cid in all_dirty_cats:
+        if cid not in system_cat_ids:
+            conn.execute(
+                'UPDATE Category SET dirty = 1 WHERE id = ?', (cid,)
+            )
 
     # Delete categories that became empty.
     deleted_names: list[str] = []
@@ -916,12 +923,6 @@ def main() -> int:
         # 5. Apply changes
         # ----------------------------------------------------------
 
-        # Clean placeholders if requested.
-        if args.clean_placeholder:
-            removed = delete_empty_placeholder_categories(conn)
-            if removed:
-                print(f"\nRemoved {len(removed)} empty placeholder categories: {', '.join(removed)}")
-
         # Create new categories.
         next_order = max_order + 1
         created_ids: dict[str, int] = {}
@@ -999,8 +1000,15 @@ def main() -> int:
         # Remove all non-system, non-target assignments; delete empty categories.
         cleaned, deleted_cats = clean_old_assignments(conn, manga_target_cats)
 
+        # Delete any remaining empty non-system categories.
+        leftover_empty = delete_empty_categories(conn)
+        deleted_cats.extend(leftover_empty)
+
         # Sort all categories alphabetically (system first, then A-Z).
         reorder_categories_alphabetically(conn)
+
+        # Disable cloud sync so restored backup is treated as source of truth.
+        conn.execute("UPDATE SyncState SET enable = 0")
 
         conn.commit()
 
@@ -1010,7 +1018,7 @@ def main() -> int:
         if cleaned:
             print(f"Removed {cleaned} old assignments from other categories.")
         if deleted_cats:
-            print(f"Deleted empty categories: {', '.join(deleted_cats)}")
+            print(f"Deleted {len(deleted_cats)} empty categories: {', '.join(deleted_cats)}")
 
         # ----------------------------------------------------------
         # 6. Repack .tmb
