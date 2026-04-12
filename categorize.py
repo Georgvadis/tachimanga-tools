@@ -31,10 +31,6 @@ DEFAULT_OUTPUT_DIRNAME = "output"
 # categorization regardless of order or id.
 SYSTEM_CATEGORIES = {"Запланировано", "Прочитано", "Брошенно", "Читаю", "Отложено"}
 
-# Holding-bin categories — manga is removed from these after being
-# assigned to a proper artist category.
-HOLDING_CATEGORIES = {"ZDefault", "ZSort", "ZArtists"}
-
 # Category for manga where artist cannot be determined.
 UNKNOWN_CATEGORY = "Неизвестно"
 
@@ -433,63 +429,62 @@ def delete_empty_placeholder_categories(conn: sqlite3.Connection) -> list[str]:
     return removed
 
 
-def get_holding_category_ids(conn: sqlite3.Connection) -> dict[int, str]:
-    """Return {category_id: name} for holding-bin categories."""
-    placeholders = ", ".join("?" for _ in HOLDING_CATEGORIES)
-    rows = conn.execute(
-        f"SELECT id, name FROM Category WHERE name IN ({placeholders}) AND is_delete = 0",
-        tuple(HOLDING_CATEGORIES),
-    )
-    return {int(r["id"]): r["name"] for r in rows}
-
-
-def clean_holding_categories(
+def clean_old_assignments(
     conn: sqlite3.Connection,
-    categorized_manga_ids: set[int],
+    manga_target_cats: dict[int, set[int]],
 ) -> tuple[int, list[str]]:
     """
-    Remove categorized manga from holding-bin categories (ZDefault, ZSort, ZArtists).
-    Delete the holding category itself if it becomes empty.
+    For each categorized manga, remove ALL category assignments except
+    system categories and the target artist category.
+    Delete categories that become empty after cleanup.
     Return (removed_assignments, deleted_category_names).
     """
-    holding = get_holding_category_ids(conn)
-    if not holding:
-        return 0, []
+    # Get system category IDs to protect.
+    system_cat_ids: set[int] = set()
+    placeholders = ", ".join("?" for _ in SYSTEM_CATEGORIES)
+    for r in conn.execute(
+        f"SELECT id FROM Category WHERE name IN ({placeholders}) AND is_delete = 0",
+        tuple(SYSTEM_CATEGORIES),
+    ):
+        system_cat_ids.add(int(r["id"]))
 
+    keep_pairs: set[tuple[int, int]] = set()  # (category_id, manga_id)
+    for mid, target_cids in manga_target_cats.items():
+        for cid in target_cids:
+            keep_pairs.add((cid, mid))
+
+    # Find all assignments for categorized manga that should be removed.
+    all_manga = tuple(manga_target_cats)
     removed = 0
-    for hid in holding:
-        cur = conn.execute(
-            "DELETE FROM CategoryManga WHERE category = ? AND manga IN ({})".format(
-                ", ".join("?" for _ in categorized_manga_ids)
-            ),
-            (hid, *categorized_manga_ids),
-        )
-        removed += cur.rowcount
+    affected_cats: set[int] = set()
 
-    # Also delete Artist1..N placeholder assignments for categorized manga.
-    placeholder_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM Category WHERE name GLOB 'Artist[0-9]*' AND is_delete = 0"
-        )
-    ]
-    for pid in placeholder_ids:
-        cur = conn.execute(
-            "DELETE FROM CategoryManga WHERE category = ? AND manga IN ({})".format(
-                ", ".join("?" for _ in categorized_manga_ids)
-            ),
-            (pid, *categorized_manga_ids),
-        )
-        removed += cur.rowcount
+    for mid in all_manga:
+        rows = conn.execute(
+            "SELECT category FROM CategoryManga WHERE manga = ?", (mid,)
+        ).fetchall()
+        for r in rows:
+            cid = int(r["category"])
+            if cid in system_cat_ids:
+                continue
+            if (cid, mid) in keep_pairs:
+                continue
+            conn.execute(
+                "DELETE FROM CategoryManga WHERE category = ? AND manga = ?",
+                (cid, mid),
+            )
+            affected_cats.add(cid)
+            removed += 1
 
-    # Delete now-empty holding/placeholder categories.
+    # Delete categories that became empty.
     deleted_names: list[str] = []
-    for cid in list(holding) + placeholder_ids:
+    for cid in affected_cats:
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM CategoryManga WHERE category = ?", (cid,)
         ).fetchone()
         if row["cnt"] == 0:
-            name_row = conn.execute("SELECT name FROM Category WHERE id = ?", (cid,)).fetchone()
+            name_row = conn.execute(
+                "SELECT name FROM Category WHERE id = ?", (cid,)
+            ).fetchone()
             if name_row:
                 conn.execute("DELETE FROM Category WHERE id = ?", (cid,))
                 deleted_names.append(name_row["name"])
@@ -801,8 +796,17 @@ def main() -> int:
             # Include uncategorized manga in the set for holding cleanup.
             categorized_ids.update(uncategorized_ids)
 
-        # Clean holding-bin categories (ZDefault, ZSort, ZArtists, Artist*).
-        cleaned, deleted_cats = clean_holding_categories(conn, categorized_ids)
+        # Build manga → target category mapping for cleanup.
+        manga_target_cats: dict[int, set[int]] = collections.defaultdict(set)
+        for artist_raw, cids in all_artist_cats.items():
+            for mid in artist_mapping.get(artist_raw, []):
+                manga_target_cats[mid].update(cids)
+        if uncategorized_ids:
+            for mid in uncategorized_ids:
+                manga_target_cats[mid].add(unknown_cid)
+
+        # Remove all non-system, non-target assignments; delete empty categories.
+        cleaned, deleted_cats = clean_old_assignments(conn, manga_target_cats)
 
         # Sort all categories alphabetically (system first, then A-Z).
         reorder_categories_alphabetically(conn)
@@ -813,7 +817,7 @@ def main() -> int:
         if unknown_added:
             print(f"Assigned {unknown_added} manga without detectable artist to '{UNKNOWN_CATEGORY}'.")
         if cleaned:
-            print(f"Removed {cleaned} old assignments from holding categories.")
+            print(f"Removed {cleaned} old assignments from other categories.")
         if deleted_cats:
             print(f"Deleted empty categories: {', '.join(deleted_cats)}")
 
