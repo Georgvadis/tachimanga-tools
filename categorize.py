@@ -65,8 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--field",
         choices=["artist", "author", "both"],
-        default="artist",
-        help="Which field to use for categorization (default: artist)",
+        default="both",
+        help="Which DB field to use for categorization (default: both)",
     )
     parser.add_argument(
         "--min-count",
@@ -278,7 +278,7 @@ _EHENTAI_URL_RE = re.compile(
 
 EHENTAI_API_URL = "https://api.e-hentai.org/api.php"
 EXHENTAI_API_URL = "https://exhentai.org/api.php"
-EHENTAI_BATCH_SIZE = 25
+EHENTAI_BATCH_SIZE = 10
 EHENTAI_REQUEST_DELAY = 1.5  # seconds between API requests
 EHENTAI_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -324,12 +324,22 @@ def fetch_ehentai_artists(
             headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
         req = urllib.request.Request(api_url, data=payload, headers=headers)
 
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read())
-        except Exception as exc:
-            print(f"  E-Hentai API error (batch {i // EHENTAI_BATCH_SIZE + 1}): {exc}",
-                  file=sys.stderr)
+        batch_num = i // EHENTAI_BATCH_SIZE + 1
+        data = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read())
+                break
+            except Exception as exc:
+                if attempt < 2:
+                    print(f"  Batch {batch_num}: retry {attempt + 1} after error: {exc}",
+                          file=sys.stderr)
+                    time.sleep(3)
+                else:
+                    print(f"  Batch {batch_num}: failed after 3 attempts: {exc}",
+                          file=sys.stderr)
+        if data is None:
             continue
 
         for entry in data.get("gmetadata", []):
@@ -337,10 +347,17 @@ def fetch_ehentai_artists(
             artists = [
                 tag.split(":", 1)[1]
                 for tag in entry.get("tags", [])
-                if tag.startswith("artist:")
+                if tag.startswith("artist:") or tag.startswith("group:")
             ]
-            if artists:
-                result[gid] = artists
+            # Deduplicate (artist and group can have the same name).
+            seen_names: set[str] = set()
+            unique: list[str] = []
+            for a in artists:
+                if a not in seen_names:
+                    seen_names.add(a)
+                    unique.append(a)
+            if unique:
+                result[gid] = unique
 
         # Rate-limit between batches.
         if i + EHENTAI_BATCH_SIZE < len(gid_token_list):
