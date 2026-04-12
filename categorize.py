@@ -30,6 +30,10 @@ DEFAULT_OUTPUT_DIRNAME = "output"
 # categorization regardless of order or id.
 SYSTEM_CATEGORIES = {"Запланировано", "Прочитано", "Брошенно", "Читаю", "Отложено"}
 
+# Holding-bin categories — manga is removed from these after being
+# assigned to a proper artist category.
+HOLDING_CATEGORIES = {"ZDefault", "ZSort", "ZArtists"}
+
 # The Category.name column is VARCHAR(64) in the Tachimanga schema.
 MAX_CATEGORY_NAME_LENGTH = 64
 
@@ -373,6 +377,102 @@ def delete_empty_placeholder_categories(conn: sqlite3.Connection) -> list[str]:
     return removed
 
 
+def get_holding_category_ids(conn: sqlite3.Connection) -> dict[int, str]:
+    """Return {category_id: name} for holding-bin categories."""
+    placeholders = ", ".join("?" for _ in HOLDING_CATEGORIES)
+    rows = conn.execute(
+        f"SELECT id, name FROM Category WHERE name IN ({placeholders}) AND is_delete = 0",
+        tuple(HOLDING_CATEGORIES),
+    )
+    return {int(r["id"]): r["name"] for r in rows}
+
+
+def clean_holding_categories(
+    conn: sqlite3.Connection,
+    categorized_manga_ids: set[int],
+) -> tuple[int, list[str]]:
+    """
+    Remove categorized manga from holding-bin categories (ZDefault, ZSort, ZArtists).
+    Delete the holding category itself if it becomes empty.
+    Return (removed_assignments, deleted_category_names).
+    """
+    holding = get_holding_category_ids(conn)
+    if not holding:
+        return 0, []
+
+    removed = 0
+    for hid in holding:
+        cur = conn.execute(
+            "DELETE FROM CategoryManga WHERE category = ? AND manga IN ({})".format(
+                ", ".join("?" for _ in categorized_manga_ids)
+            ),
+            (hid, *categorized_manga_ids),
+        )
+        removed += cur.rowcount
+
+    # Also delete Artist1..N placeholder assignments for categorized manga.
+    placeholder_ids = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM Category WHERE name GLOB 'Artist[0-9]*' AND is_delete = 0"
+        )
+    ]
+    for pid in placeholder_ids:
+        cur = conn.execute(
+            "DELETE FROM CategoryManga WHERE category = ? AND manga IN ({})".format(
+                ", ".join("?" for _ in categorized_manga_ids)
+            ),
+            (pid, *categorized_manga_ids),
+        )
+        removed += cur.rowcount
+
+    # Delete now-empty holding/placeholder categories.
+    deleted_names: list[str] = []
+    for cid in list(holding) + placeholder_ids:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM CategoryManga WHERE category = ?", (cid,)
+        ).fetchone()
+        if row["cnt"] == 0:
+            name_row = conn.execute("SELECT name FROM Category WHERE id = ?", (cid,)).fetchone()
+            if name_row:
+                conn.execute("DELETE FROM Category WHERE id = ?", (cid,))
+                deleted_names.append(name_row["name"])
+
+    return removed, deleted_names
+
+
+def reorder_categories_alphabetically(conn: sqlite3.Connection) -> None:
+    """
+    Reorder categories: system categories first (in their original order),
+    then all other categories sorted alphabetically.
+    """
+    system_rows = conn.execute(
+        """
+        SELECT id, name FROM Category
+        WHERE name IN ({}) AND is_delete = 0
+        ORDER BY "order"
+        """.format(", ".join("?" for _ in SYSTEM_CATEGORIES)),
+        tuple(SYSTEM_CATEGORIES),
+    ).fetchall()
+
+    other_rows = conn.execute(
+        """
+        SELECT id, name FROM Category
+        WHERE name NOT IN ({}) AND is_delete = 0
+        ORDER BY name COLLATE NOCASE
+        """.format(", ".join("?" for _ in SYSTEM_CATEGORIES)),
+        tuple(SYSTEM_CATEGORIES),
+    ).fetchall()
+
+    order = 1
+    for row in system_rows:
+        conn.execute('UPDATE Category SET "order" = ? WHERE id = ?', (order, row["id"]))
+        order += 1
+    for row in other_rows:
+        conn.execute('UPDATE Category SET "order" = ? WHERE id = ?', (order, row["id"]))
+        order += 1
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -583,8 +683,24 @@ def main() -> int:
                     existing_assignments.add((cid, mid))
                     added += 1
 
+        # Collect all manga IDs that got an artist category.
+        categorized_ids: set[int] = set()
+        for artist_raw in all_artist_cats:
+            categorized_ids.update(artist_mapping.get(artist_raw, []))
+
+        # Clean holding-bin categories (ZDefault, ZSort, ZArtists, Artist*).
+        cleaned, deleted_cats = clean_holding_categories(conn, categorized_ids)
+
+        # Sort all categories alphabetically (system first, then A-Z).
+        reorder_categories_alphabetically(conn)
+
         conn.commit()
+
         print(f"\nCreated {len(created_ids)} categories, added {added} assignments.")
+        if cleaned:
+            print(f"Removed {cleaned} old assignments from holding categories.")
+        if deleted_cats:
+            print(f"Deleted empty categories: {', '.join(deleted_cats)}")
 
         # ----------------------------------------------------------
         # 6. Repack .tmb
