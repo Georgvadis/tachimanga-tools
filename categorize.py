@@ -35,6 +35,9 @@ SYSTEM_CATEGORIES = {"Запланировано", "Прочитано", "Бро
 # assigned to a proper artist category.
 HOLDING_CATEGORIES = {"ZDefault", "ZSort", "ZArtists"}
 
+# Category for manga where artist cannot be determined.
+UNKNOWN_CATEGORY = "Неизвестно"
+
 # The Category.name column is VARCHAR(64) in the Tachimanga schema.
 MAX_CATEGORY_NAME_LENGTH = 64
 
@@ -497,8 +500,11 @@ def clean_holding_categories(
 def reorder_categories_alphabetically(conn: sqlite3.Connection) -> None:
     """
     Reorder categories: system categories first (in their original order),
-    then all other categories sorted alphabetically.
+    then "Неизвестно" (if it exists), then all other categories sorted
+    alphabetically.
     """
+    excluded = tuple(SYSTEM_CATEGORIES) + (UNKNOWN_CATEGORY,)
+
     system_rows = conn.execute(
         """
         SELECT id, name FROM Category
@@ -508,17 +514,25 @@ def reorder_categories_alphabetically(conn: sqlite3.Connection) -> None:
         tuple(SYSTEM_CATEGORIES),
     ).fetchall()
 
+    unknown_rows = conn.execute(
+        "SELECT id, name FROM Category WHERE name = ? AND is_delete = 0",
+        (UNKNOWN_CATEGORY,),
+    ).fetchall()
+
     other_rows = conn.execute(
         """
         SELECT id, name FROM Category
         WHERE name NOT IN ({}) AND is_delete = 0
         ORDER BY name COLLATE NOCASE
-        """.format(", ".join("?" for _ in SYSTEM_CATEGORIES)),
-        tuple(SYSTEM_CATEGORIES),
+        """.format(", ".join("?" for _ in excluded)),
+        excluded,
     ).fetchall()
 
     order = 1
     for row in system_rows:
+        conn.execute('UPDATE Category SET "order" = ? WHERE id = ?', (order, row["id"]))
+        order += 1
+    for row in unknown_rows:
         conn.execute('UPDATE Category SET "order" = ? WHERE id = ?', (order, row["id"]))
         order += 1
     for row in other_rows:
@@ -692,6 +706,20 @@ def main() -> int:
                 elif artist_raw in to_create:
                     pending_count += 1
 
+        # Count uncategorizable manga (no artist from any source).
+        all_library_ids_preview = {
+            int(r["id"])
+            for r in conn.execute("SELECT id FROM Manga WHERE in_library = 1")
+        }
+        # Manga with an artist assignment (existing or pending).
+        will_be_categorized: set[int] = set()
+        for artist_raw in artist_mapping:
+            if artist_raw in matched or artist_raw in to_create:
+                will_be_categorized.update(artist_mapping[artist_raw])
+        uncategorized_preview = all_library_ids_preview - system_ids - will_be_categorized
+        if uncategorized_preview:
+            print(f"Manga without detectable artist → '{UNKNOWN_CATEGORY}': {len(uncategorized_preview)}")
+
         print(f"\nNew category-manga assignments to add: {pending_count}")
 
         if args.dry_run:
@@ -741,6 +769,38 @@ def main() -> int:
         for artist_raw in all_artist_cats:
             categorized_ids.update(artist_mapping.get(artist_raw, []))
 
+        # ----------------------------------------------------------
+        # 5b. Handle uncategorizable manga → "Неизвестно"
+        # ----------------------------------------------------------
+        # Find all in-library manga that did NOT get an artist category.
+        all_library_ids = {
+            int(r["id"])
+            for r in conn.execute("SELECT id FROM Manga WHERE in_library = 1")
+        }
+        uncategorized_ids = all_library_ids - system_ids - categorized_ids
+
+        unknown_added = 0
+        if uncategorized_ids:
+            # Find or create the "Неизвестно" category.
+            unknown_row = conn.execute(
+                "SELECT id FROM Category WHERE name = ? AND is_delete = 0",
+                (UNKNOWN_CATEGORY,),
+            ).fetchone()
+            if unknown_row:
+                unknown_cid = int(unknown_row["id"])
+            else:
+                unknown_cid = create_category(conn, UNKNOWN_CATEGORY, next_order)
+                next_order += 1
+
+            for mid in uncategorized_ids:
+                if (unknown_cid, mid) not in existing_assignments:
+                    insert_category_manga(conn, unknown_cid, mid)
+                    existing_assignments.add((unknown_cid, mid))
+                    unknown_added += 1
+
+            # Include uncategorized manga in the set for holding cleanup.
+            categorized_ids.update(uncategorized_ids)
+
         # Clean holding-bin categories (ZDefault, ZSort, ZArtists, Artist*).
         cleaned, deleted_cats = clean_holding_categories(conn, categorized_ids)
 
@@ -750,6 +810,8 @@ def main() -> int:
         conn.commit()
 
         print(f"\nCreated {len(created_ids)} categories, added {added} assignments.")
+        if unknown_added:
+            print(f"Assigned {unknown_added} manga without detectable artist to '{UNKNOWN_CATEGORY}'.")
         if cleaned:
             print(f"Removed {cleaned} old assignments from holding categories.")
         if deleted_cats:
