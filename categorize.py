@@ -197,8 +197,13 @@ def title_case_artist(name: str) -> str:
     return " ".join(word.capitalize() for word in name.split())
 
 
-# Regex: "[Circle (Artist)] ..." or "[Artist] ..."
-_TITLE_ARTIST_RE = re.compile(r"^\[([^\]]+)\]")
+# Regex patterns for artist extraction from titles:
+#   [Artist] ...
+#   [Circle (Artist)] ...
+#   (Event) [Artist] ...
+#   (Event) [Circle (Artist)] ...
+_BRACKET_RE = re.compile(r"^\[([^\]]+)\]")
+_EVENT_BRACKET_RE = re.compile(r"^\([^)]+\)\s*\[([^\]]+)\]")
 _PAREN_ARTIST_RE = re.compile(r".+\(([^)]+)\)$")
 
 
@@ -207,9 +212,10 @@ def extract_artist_from_title(title: str) -> str | None:
     Try to extract artist name from a title like:
       [Artist] Some Title
       [Circle (Artist)] Some Title
+      (Event) [Circle (Artist)] Some Title
     Returns the artist string or None.
     """
-    m = _TITLE_ARTIST_RE.match(title)
+    m = _BRACKET_RE.match(title) or _EVENT_BRACKET_RE.match(title)
     if not m:
         return None
     bracket = m.group(1).strip()
