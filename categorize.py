@@ -1007,8 +1007,12 @@ def main() -> int:
         # Sort all categories alphabetically (system first, then A-Z).
         reorder_categories_alphabetically(conn)
 
-        # Disable cloud sync so restored backup is treated as source of truth.
-        conn.execute("UPDATE SyncState SET enable = 0")
+        # Reset sync state so restored backup is treated as new data.
+        conn.execute("UPDATE SyncState SET enable = 0, max_commit_id = 0, last_sync_time = 0")
+        conn.execute("DELETE FROM SyncCommit")
+        conn.execute("DELETE FROM ChapterSync")
+        for tbl in ("Category", "CategoryManga", "Manga", "Chapter"):
+            conn.execute(f"UPDATE {tbl} SET commit_id = 0, dirty = 1")
 
         conn.commit()
 
