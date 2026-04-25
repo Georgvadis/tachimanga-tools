@@ -83,18 +83,16 @@ def main() -> int:
         "FROM Manga m "
         "JOIN CategoryManga cm ON cm.manga = m.id "
         "JOIN Category c ON c.id = cm.category "
-        "WHERE m.in_library = 1 AND c.is_delete = 0 AND c.name NOT IN ({})".format(
-            ",".join("?" for _ in SYSTEM_CATEGORIES)
-        ),
-        tuple(SYSTEM_CATEGORIES),
+        "WHERE m.in_library = 1 AND c.is_delete = 0"
     ).fetchall()
     for r in rows:
         key = (r["source"], r["url"])
-        src_lib[key] = {
+        info = src_lib.setdefault(key, {
             "title": r["title"],
             "in_library_at": r["in_library_at"],
-            "letter": r["letter"],
-        }
+            "categories": [],
+        })
+        info["categories"].append(r["letter"])
     src_conn.close()
     print(f"  Source library: {len(src_lib)} manga in letter categories")
 
@@ -109,12 +107,25 @@ def main() -> int:
         post_id_by_key[(r["source"], r["url"])] = int(r["id"])
 
     # Letter category id by name
+    now_ms = int(time.time() * 1000)
+    placeholders = ",".join("?" for _ in SYSTEM_CATEGORIES)
+
+    # Undelete the Russian system categories first so we can attach manga to
+    # them. If the cloud honors the undelete, the Russian names come back
+    # instead of the English defaults the app would otherwise auto-create.
+    sys_undeleted = cur.execute(
+        f"UPDATE Category SET is_delete = 0, dirty = 1, update_at = ? "
+        f"WHERE name IN ({placeholders}) AND is_delete = 1",
+        (now_ms,) + tuple(SYSTEM_CATEGORIES),
+    ).rowcount
+    if sys_undeleted:
+        print(f"  Undeleted {sys_undeleted} system categories (Russian).")
+
     letter_cid: dict[str, int] = {}
     for r in cur.execute("SELECT id, name FROM Category WHERE is_delete = 0"):
         letter_cid[r["name"]] = int(r["id"])
 
     # Apply: mark manga in_library=1, dirty=1; recreate CategoryManga; mark category dirty=1.
-    now_ms = int(time.time() * 1000)
     matched = 0
     missing = 0
     by_letter: dict[str, list[int]] = collections.defaultdict(list)
@@ -124,45 +135,32 @@ def main() -> int:
         if mid is None:
             missing += 1
             continue
-        cid = letter_cid.get(info["letter"])
-        if cid is None:
-            # Letter category should exist (we created them via categorize.py).
-            continue
         in_lib_at = info["in_library_at"] or now_ms
         cur.execute(
             "UPDATE Manga SET in_library = 1, in_library_at = ?, default_category = 0, dirty = 1, update_at = ? WHERE id = ?",
             (in_lib_at, now_ms, mid),
         )
-        # CategoryManga has no soft-delete; insert if missing.
-        existing = cur.execute(
-            "SELECT 1 FROM CategoryManga WHERE category = ? AND manga = ?",
-            (cid, mid),
-        ).fetchone()
-        if not existing:
-            cur.execute(
-                "INSERT INTO CategoryManga (category, manga) VALUES (?, ?)",
+        for cat_name in info["categories"]:
+            cid = letter_cid.get(cat_name)
+            if cid is None:
+                continue
+            existing = cur.execute(
+                "SELECT 1 FROM CategoryManga WHERE category = ? AND manga = ?",
                 (cid, mid),
-            )
-        by_letter[info["letter"]].append(mid)
+            ).fetchone()
+            if not existing:
+                cur.execute(
+                    "INSERT INTO CategoryManga (category, manga) VALUES (?, ?)",
+                    (cid, mid),
+                )
+            by_letter[cat_name].append(mid)
         matched += 1
 
     # Mark all visible (non-system) categories as dirty so they push.
-    placeholders = ",".join("?" for _ in SYSTEM_CATEGORIES)
     cur.execute(
         f"UPDATE Category SET dirty = 1 WHERE is_delete = 0 AND name NOT IN ({placeholders})",
         tuple(SYSTEM_CATEGORIES),
     )
-
-    # Undelete the Russian system categories so they reappear after sync.
-    # If the cloud honors the undelete, the Russian names come back instead of
-    # the English defaults the app would otherwise auto-create.
-    sys_undeleted = cur.execute(
-        f"UPDATE Category SET is_delete = 0, dirty = 1, update_at = ? "
-        f"WHERE name IN ({placeholders}) AND is_delete = 1",
-        (now_ms,) + tuple(SYSTEM_CATEGORIES),
-    ).rowcount
-    if sys_undeleted:
-        print(f"  Undeleted {sys_undeleted} system categories (Russian).")
 
     print(f"  Restored in_library + assignments for {matched} manga (missing in post-sync: {missing})")
     for letter in sorted(by_letter):
