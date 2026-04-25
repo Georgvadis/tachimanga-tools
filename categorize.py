@@ -233,6 +233,30 @@ def title_case_artist(name: str) -> str:
     return " ".join(word.capitalize() for word in name.split())
 
 
+OTHER_BUCKET = "#"
+
+
+def letter_bucket(artist_raw: str) -> str:
+    """
+    Return the letter category for an artist string.
+
+    Picks the primary artist (first comma-separated part, first '|' alias),
+    finds the first alphabetic character, and returns it uppercase.
+    Non-Latin characters (digits, Japanese, etc.) go to OTHER_BUCKET ('#').
+    """
+    parts = [p.strip() for p in artist_raw.split(",") if p.strip()]
+    primary = parts[0] if parts else artist_raw
+    aliases = split_aliases(primary)
+    name = aliases[0] if aliases else primary
+    for ch in name.lstrip():
+        if ch.isalpha():
+            up = ch.upper()
+            if "A" <= up <= "Z":
+                return up
+            return OTHER_BUCKET
+    return OTHER_BUCKET
+
+
 # Regex patterns for artist extraction from titles:
 #   [Artist] ...
 #   [Circle (Artist)] ...
@@ -704,10 +728,18 @@ def reorder_categories_alphabetically(conn: sqlite3.Connection) -> None:
         """
         SELECT id, name FROM Category
         WHERE name NOT IN ({}) AND is_delete = 0
-        ORDER BY name COLLATE NOCASE
         """.format(", ".join("?" for _ in excluded)),
         excluded,
     ).fetchall()
+
+    # Sort: A-Z first, then '#' (OTHER_BUCKET), then anything else alphabetically.
+    def sort_key(row: sqlite3.Row) -> tuple:
+        name = row["name"]
+        if name == OTHER_BUCKET:
+            return (2, name)
+        return (1, name.lower())
+
+    other_rows = sorted(other_rows, key=sort_key)
 
     order = 1
     for row in system_rows:
@@ -795,166 +827,72 @@ def main() -> int:
             }
 
         # ----------------------------------------------------------
-        # 2. Match artists to existing categories / plan new ones
+        # 2. Group manga by artist letter bucket (A-Z, '#' for other)
         # ----------------------------------------------------------
-        matched: dict[str, list[int]] = {}   # artist_raw → [category_ids]
-        to_create: dict[str, str] = {}       # artist_raw → new category name
-        skipped_long: list[tuple[str, int]] = []  # (artist_raw, manga_count)
-        # Track names we're about to create to avoid duplicates.
-        pending_names: dict[str, str] = {}   # normalize(cat_name) → artist_raw
-
-        def _match_existing(name: str) -> int | None:
-            """Match a single artist name against existing DB categories."""
-            return match_artist_to_category(name, cat_exact, cat_compact)
-
-        def _match_pending(name: str) -> str | None:
-            """Match against categories we're about to create. Returns artist_raw key."""
-            for alias in split_aliases(name):
-                norm = normalize(alias)
-                if norm in pending_names:
-                    return pending_names[norm]
-            return None
-
-        for artist_raw in sorted(artist_mapping, key=lambda a: (-len(artist_mapping[a]), a)):
-            # 1) Try to match the whole string (handles "|" aliases).
-            cid = _match_existing(artist_raw)
-            if cid is not None:
-                matched[artist_raw] = [cid]
-                continue
-
-            # 2) For comma-separated multi-artist entries, try each part.
-            parts = [p.strip() for p in artist_raw.split(",") if p.strip()]
-            if len(parts) > 1:
-                found_existing: list[int] = []
-                found_pending: list[str] = []
-                for part in parts:
-                    c = _match_existing(part)
-                    if c is not None and c not in found_existing:
-                        found_existing.append(c)
-                        continue
-                    p_raw = _match_pending(part)
-                    if p_raw is not None and p_raw not in found_pending:
-                        found_pending.append(p_raw)
-                if found_existing or found_pending:
-                    if found_existing:
-                        matched[artist_raw] = found_existing
-                    # Merge manga into pending artist categories.
-                    for p_raw in found_pending:
-                        artist_mapping[p_raw].extend(artist_mapping[artist_raw])
-                    continue
-                # None matched — use first individual artist for new category.
-                artist_for_name = parts[0]
-            else:
-                artist_for_name = artist_raw
-
-            # 3) Check if this merges into an already-pending category.
-            p_raw = _match_pending(artist_for_name)
-            if p_raw is not None:
-                artist_mapping[p_raw].extend(artist_mapping[artist_raw])
-                continue
-
-            # 4) Create a new category.
-            cat_name = pick_category_name(artist_for_name)
-            if len(cat_name) > MAX_CATEGORY_NAME_LENGTH:
-                skipped_long.append((artist_raw, len(artist_mapping[artist_raw])))
-                continue
-            to_create[artist_raw] = cat_name
-            pending_names[normalize(cat_name)] = artist_raw
+        letter_to_manga: dict[str, set[int]] = collections.defaultdict(set)
+        for artist_raw, manga_ids in artist_mapping.items():
+            letter = letter_bucket(artist_raw)
+            letter_to_manga[letter].update(manga_ids)
 
         # ----------------------------------------------------------
-        # 3. Plan assignments
-        # ----------------------------------------------------------
-        new_assignments: list[tuple[str, int, int]] = []  # (artist, cat_id, manga_id) — for reporting
-        # We'll fill cat_id after creation for new categories.
-
-        # ----------------------------------------------------------
-        # 4. Report / dry-run
+        # 3. Report / dry-run
         # ----------------------------------------------------------
         print(f"\nBackup: {backup_path.name}")
         print(f"Field:  {args.field}")
         print(f"Skipped manga in system categories ({', '.join(sorted(SYSTEM_CATEGORIES))}): {len(system_ids)}")
         print(f"Artists with >= {args.min_count} manga: {len(artist_mapping)}")
-        print(f"Matched to existing categories: {len(matched)}")
-        print(f"New categories to create: {len(to_create)}")
-        if skipped_long:
-            print(f"Skipped (name > {MAX_CATEGORY_NAME_LENGTH} chars): {len(skipped_long)}")
-            for raw, cnt in skipped_long:
-                print(f"  ({cnt} manga)  {raw[:80]}...")
-
-        if to_create:
-            print("\n--- New categories ---")
-            for artist_raw, cat_name in sorted(to_create.items(), key=lambda x: x[1]):
-                count = len(artist_mapping[artist_raw])
-                print(f"  {cat_name:<30} ({count} manga)  ← {artist_raw!r}")
-
-        # Count new assignments needed.
-        pending_count = 0
-        for artist_raw, manga_ids in artist_mapping.items():
-            cids = matched.get(artist_raw, [])
-            for mid in manga_ids:
-                if cids:
-                    for c in cids:
-                        if (c, mid) not in existing_assignments:
-                            pending_count += 1
-                elif artist_raw in to_create:
-                    pending_count += 1
+        print(f"Letter buckets: {len(letter_to_manga)}")
+        for letter in sorted(letter_to_manga, key=lambda x: (x == OTHER_BUCKET, x)):
+            print(f"  {letter}: {len(letter_to_manga[letter])} manga")
 
         # Count uncategorizable manga (no artist from any source).
         all_library_ids_preview = {
             int(r["id"])
             for r in conn.execute("SELECT id FROM Manga WHERE in_library = 1")
         }
-        # Manga with an artist assignment (existing or pending).
         will_be_categorized: set[int] = set()
-        for artist_raw in artist_mapping:
-            if artist_raw in matched or artist_raw in to_create:
-                will_be_categorized.update(artist_mapping[artist_raw])
+        for ids in letter_to_manga.values():
+            will_be_categorized.update(ids)
         uncategorized_preview = all_library_ids_preview - system_ids - will_be_categorized
         if uncategorized_preview:
             print(f"Manga without detectable artist → '{UNKNOWN_CATEGORY}': {len(uncategorized_preview)}")
-
-        print(f"\nNew category-manga assignments to add: {pending_count}")
 
         if args.dry_run:
             print("\n(dry run — no changes made)")
             return 0
 
         # ----------------------------------------------------------
-        # 5. Apply changes
+        # 4. Apply changes — create letter categories, assign manga
         # ----------------------------------------------------------
-
-        # Create new categories.
         next_order = max_order + 1
-        created_ids: dict[str, int] = {}
-        for artist_raw, cat_name in sorted(to_create.items(), key=lambda x: x[1]):
-            cid = create_category(conn, cat_name, next_order)
-            created_ids[artist_raw] = cid
-            cat_exact[normalize(cat_name)] = cid
-            cat_compact[normalize_compact(cat_name)] = cid
-            next_order += 1
+        letter_cids: dict[str, int] = {}
+        created_ids: dict[str, int] = {}  # for compatibility with summary print
+        for letter in sorted(letter_to_manga, key=lambda x: (x == OTHER_BUCKET, x)):
+            existing_row = conn.execute(
+                "SELECT id FROM Category WHERE name = ? AND is_delete = 0",
+                (letter,),
+            ).fetchone()
+            if existing_row:
+                cid = int(existing_row["id"])
+            else:
+                cid = create_category(conn, letter, next_order)
+                created_ids[letter] = cid
+                next_order += 1
+            letter_cids[letter] = cid
 
-        # Merge all artist → [category_ids].
-        all_artist_cats: dict[str, list[int]] = {}
-        all_artist_cats.update(matched)
-        for ar, cid in created_ids.items():
-            all_artist_cats[ar] = [cid]
-
-        # Insert CategoryManga entries.
         added = 0
-        for artist_raw, manga_ids in artist_mapping.items():
-            cids = all_artist_cats.get(artist_raw, [])
-            for cid in cids:
-                for mid in manga_ids:
-                    if (cid, mid) in existing_assignments:
-                        continue
-                    insert_category_manga(conn, cid, mid)
-                    existing_assignments.add((cid, mid))
-                    added += 1
+        for letter, manga_ids in letter_to_manga.items():
+            cid = letter_cids[letter]
+            for mid in manga_ids:
+                if (cid, mid) in existing_assignments:
+                    continue
+                insert_category_manga(conn, cid, mid)
+                existing_assignments.add((cid, mid))
+                added += 1
 
-        # Collect all manga IDs that got an artist category.
         categorized_ids: set[int] = set()
-        for artist_raw in all_artist_cats:
-            categorized_ids.update(artist_mapping.get(artist_raw, []))
+        for ids in letter_to_manga.values():
+            categorized_ids.update(ids)
 
         # ----------------------------------------------------------
         # 5b. Handle uncategorizable manga → "Неизвестно"
@@ -990,9 +928,10 @@ def main() -> int:
 
         # Build manga → target category mapping for cleanup.
         manga_target_cats: dict[int, set[int]] = collections.defaultdict(set)
-        for artist_raw, cids in all_artist_cats.items():
-            for mid in artist_mapping.get(artist_raw, []):
-                manga_target_cats[mid].update(cids)
+        for letter, manga_ids in letter_to_manga.items():
+            cid = letter_cids[letter]
+            for mid in manga_ids:
+                manga_target_cats[mid].add(cid)
         if uncategorized_ids:
             for mid in uncategorized_ids:
                 manga_target_cats[mid].add(unknown_cid)
@@ -1012,7 +951,14 @@ def main() -> int:
         conn.execute("DELETE FROM SyncCommit")
         conn.execute("DELETE FROM ChapterSync")
         for tbl in ("Category", "CategoryManga", "Manga", "Chapter"):
-            conn.execute(f"UPDATE {tbl} SET commit_id = 0, dirty = 1")
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+            updates = []
+            if "commit_id" in cols:
+                updates.append("commit_id = 0")
+            if "dirty" in cols:
+                updates.append("dirty = 1")
+            if updates:
+                conn.execute(f"UPDATE {tbl} SET " + ", ".join(updates))
 
         conn.commit()
 
