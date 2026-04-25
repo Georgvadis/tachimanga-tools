@@ -153,6 +153,17 @@ def main() -> int:
         tuple(SYSTEM_CATEGORIES),
     )
 
+    # Undelete the Russian system categories so they reappear after sync.
+    # If the cloud honors the undelete, the Russian names come back instead of
+    # the English defaults the app would otherwise auto-create.
+    sys_undeleted = cur.execute(
+        f"UPDATE Category SET is_delete = 0, dirty = 1, update_at = ? "
+        f"WHERE name IN ({placeholders}) AND is_delete = 1",
+        (now_ms,) + tuple(SYSTEM_CATEGORIES),
+    ).rowcount
+    if sys_undeleted:
+        print(f"  Undeleted {sys_undeleted} system categories (Russian).")
+
     print(f"  Restored in_library + assignments for {matched} manga (missing in post-sync: {missing})")
     for letter in sorted(by_letter):
         print(f"    {letter}: {len(by_letter[letter])}")
