@@ -611,7 +611,10 @@ def insert_category_manga(
 
 
 def delete_empty_categories(conn: sqlite3.Connection) -> list[str]:
-    """Delete all non-system empty categories (zero manga assigned)."""
+    """
+    Soft-delete all non-system empty categories so the deletion is propagated
+    to cloud on next sync (is_delete=1, dirty=1, original commit_id preserved).
+    """
     placeholders = ", ".join("?" for _ in SYSTEM_CATEGORIES)
     rows = conn.execute(
         f"""
@@ -623,8 +626,12 @@ def delete_empty_categories(conn: sqlite3.Connection) -> list[str]:
         tuple(SYSTEM_CATEGORIES),
     ).fetchall()
     removed: list[str] = []
+    now_ms = int(time.time() * 1000)
     for row in rows:
-        conn.execute("DELETE FROM Category WHERE id = ?", (row["id"],))
+        conn.execute(
+            "UPDATE Category SET is_delete = 1, dirty = 1, update_at = ? WHERE id = ?",
+            (now_ms, row["id"]),
+        )
         removed.append(row["name"])
     return removed
 
@@ -685,8 +692,9 @@ def clean_old_assignments(
                 'UPDATE Category SET dirty = 1 WHERE id = ?', (cid,)
             )
 
-    # Delete categories that became empty.
+    # Soft-delete categories that became empty so cloud receives the deletion.
     deleted_names: list[str] = []
+    now_ms = int(time.time() * 1000)
     for cid in affected_cats:
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM CategoryManga WHERE category = ?", (cid,)
@@ -696,7 +704,10 @@ def clean_old_assignments(
                 "SELECT name FROM Category WHERE id = ?", (cid,)
             ).fetchone()
             if name_row:
-                conn.execute("DELETE FROM Category WHERE id = ?", (cid,))
+                conn.execute(
+                    "UPDATE Category SET is_delete = 1, dirty = 1, update_at = ? WHERE id = ?",
+                    (now_ms, cid),
+                )
                 deleted_names.append(name_row["name"])
 
     return removed, deleted_names
@@ -967,19 +978,17 @@ def main() -> int:
         # Sort all categories alphabetically (system first, then A-Z).
         reorder_categories_alphabetically(conn)
 
-        # Reset sync state so restored backup is treated as new data.
-        conn.execute("UPDATE SyncState SET enable = 0, max_commit_id = 0, last_sync_time = 0")
-        conn.execute("DELETE FROM SyncCommit")
-        conn.execute("DELETE FROM ChapterSync")
-        for tbl in ("Category", "CategoryManga", "Manga", "Chapter"):
+        # Mark library entries dirty so the next sync pushes our changes.
+        # Keep commit_id intact: cloud needs the original id to apply updates
+        # and deletions to the right records (dropping it would orphan everything).
+        for tbl in ("Category", "Manga", "Chapter"):
             cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
-            updates = []
-            if "commit_id" in cols:
-                updates.append("commit_id = 0")
             if "dirty" in cols:
-                updates.append("dirty = 1")
-            if updates:
-                conn.execute(f"UPDATE {tbl} SET " + ", ".join(updates))
+                conn.execute(f"UPDATE {tbl} SET dirty = 1")
+
+        # Leave SyncState/SyncCommit alone — user can toggle sync on after
+        # restore if they want local state to overwrite cloud.
+        conn.execute("UPDATE SyncState SET enable = 0")
 
         conn.commit()
 
