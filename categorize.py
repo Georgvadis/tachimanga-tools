@@ -986,8 +986,8 @@ def main() -> int:
             if "dirty" in cols:
                 conn.execute(f"UPDATE {tbl} SET dirty = 1")
 
-        # Leave SyncState/SyncCommit alone — user can toggle sync on after
-        # restore if they want local state to overwrite cloud.
+        # Leave sync disabled so the user can verify the active account
+        # before the first sync. They flip enable in settings when ready.
         conn.execute("UPDATE SyncState SET enable = 0")
 
         conn.commit()
