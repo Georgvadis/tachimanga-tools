@@ -939,6 +939,27 @@ def main() -> int:
         # Remove all non-system, non-target assignments; delete empty categories.
         cleaned, deleted_cats = clean_old_assignments(conn, manga_target_cats)
 
+        # Aggressively wipe any leftover assignments and categories that aren't
+        # system/letter/Неизвестно. Catches manga that wasn't in our mapping
+        # (e.g. orphans, in_library=0) but still left dangling links.
+        keep_cat_ids: set[int] = set(letter_cids.values())
+        if uncategorized_ids:
+            keep_cat_ids.add(unknown_cid)
+        placeholders = ", ".join("?" for _ in SYSTEM_CATEGORIES)
+        for r in conn.execute(
+            f"SELECT id FROM Category WHERE name IN ({placeholders}) AND is_delete = 0",
+            tuple(SYSTEM_CATEGORIES),
+        ):
+            keep_cat_ids.add(int(r["id"]))
+
+        keep_placeholders = ", ".join("?" for _ in keep_cat_ids) or "NULL"
+        wiped = conn.execute(
+            f"DELETE FROM CategoryManga WHERE category NOT IN ({keep_placeholders})",
+            tuple(keep_cat_ids),
+        ).rowcount
+        if wiped:
+            cleaned += wiped
+
         # Delete any remaining empty non-system categories.
         leftover_empty = delete_empty_categories(conn)
         deleted_cats.extend(leftover_empty)
