@@ -1,12 +1,13 @@
-# nsfw-ext
+# Расширения TachiManga
 
-Мини-репозиторий расширений `E-Hentai` и `Hitomi` с локальной сборкой и публикацией в `gh-pages`.
+Модуль `tachimanga-tools` с расширениями `E-Hentai` и `Hitomi` с локальной сборкой и публикацией в `gh-pages`.
 
 ## Быстрый старт
 
-Если окружение уже настроено:
+Из корня `tachimanga-tools`, если окружение уже настроено:
 
 ```bash
+cd extensions
 source ~/.bashrc
 source ~/.nsfw-ext.env
 ./scripts/release_repo.sh
@@ -15,7 +16,7 @@ source ~/.nsfw-ext.env
 После публикации URL репозитория:
 
 ```text
-https://georgvadis.github.io/nsfw-ext/index.min.json
+https://georgvadis.github.io/Nsfw-ext/index.min.json
 ```
 
 ## Основные команды
@@ -45,6 +46,8 @@ https://georgvadis.github.io/nsfw-ext/index.min.json
 
 ## Важно
 
-- `signingkey.jks` должен лежать в корне проекта и не должен попадать в git
+- `signingkey.jks` должен лежать в `extensions/` и не должен попадать в git
 - для обновлений нужно всегда использовать один и тот же ключ подписи
 - перед каждым релизом повышайте `extVersionCode` в нужном расширении
+
+Исходники развиваются в `Georgvadis/tachimanga-tools`. Публикация готовых файлов остаётся в `Georgvadis/nsfw-ext`, ветка `gh-pages`; адрес обновлений сохранён. Подробности: [миграция](../docs/migration.md).

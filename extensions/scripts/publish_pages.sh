@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PUBLISH_DIR="${PUBLISH_DIR:-$ROOT_DIR/../nsfw-ext-pages}"
-REMOTE_NAME="${PAGES_REMOTE:-origin}"
+PUBLISH_DIR="${PUBLISH_DIR:-$ROOT_DIR/../.cache/extension-pages}"
+PAGES_URL="${PAGES_REPOSITORY_URL:-https://github.com/Georgvadis/nsfw-ext.git}"
 BRANCH_NAME="${PAGES_BRANCH:-gh-pages}"
 COMMIT_MESSAGE="${PAGES_COMMIT_MESSAGE:-Publish extension repo}"
 
@@ -27,24 +27,26 @@ main() {
     require_command git
     require_command rsync
 
-    if ! git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "Not a git repository: $ROOT_DIR" >&2
-        exit 1
-    fi
-
-    if ! git -C "$ROOT_DIR" remote get-url "$REMOTE_NAME" >/dev/null 2>&1; then
-        echo "Git remote '$REMOTE_NAME' is not configured in $ROOT_DIR" >&2
-        exit 1
-    fi
-
     require_repo_file "index.min.json"
     require_repo_file "repo.json"
 
     mkdir -p "$(dirname "$PUBLISH_DIR")"
-
-    if [[ ! -d "$PUBLISH_DIR/.git" ]]; then
-        git -C "$ROOT_DIR" worktree add -B "$BRANCH_NAME" "$PUBLISH_DIR"
+    if [[ ! -e "$PUBLISH_DIR" ]]; then
+        git clone --single-branch --branch "$BRANCH_NAME" "$PAGES_URL" "$PUBLISH_DIR"
     fi
+
+    # Use an independent clone so source history never enters the release branch.
+    if [[ ! -d "$PUBLISH_DIR/.git" ]] ||
+       [[ "$(git -C "$PUBLISH_DIR" remote get-url origin)" != "$PAGES_URL" ]] ||
+       [[ "$(git -C "$PUBLISH_DIR" branch --show-current)" != "$BRANCH_NAME" ]]; then
+        echo "Publish directory must be an independent clone of $PAGES_URL ($BRANCH_NAME)." >&2
+        exit 1
+    fi
+    if [[ -n "$(git -C "$PUBLISH_DIR" status --porcelain)" ]]; then
+        echo "Publish directory has uncommitted changes: $PUBLISH_DIR" >&2
+        exit 1
+    fi
+    git -C "$PUBLISH_DIR" pull --ff-only origin "$BRANCH_NAME"
 
     rsync -av --delete --exclude '.git' "$ROOT_DIR/repo/" "$PUBLISH_DIR/"
     touch "$PUBLISH_DIR/.nojekyll"
@@ -56,7 +58,7 @@ main() {
     fi
 
     git -C "$PUBLISH_DIR" commit -m "$COMMIT_MESSAGE"
-    git -C "$PUBLISH_DIR" push -u "$REMOTE_NAME" "$BRANCH_NAME"
+    git -C "$PUBLISH_DIR" push -u origin "$BRANCH_NAME"
 
     echo "Published repo branch '$BRANCH_NAME' from $PUBLISH_DIR"
 }

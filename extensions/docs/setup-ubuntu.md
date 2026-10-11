@@ -84,10 +84,12 @@ rm -rf "$HOME/Android/Sdk/cmdline-tools/latest-2"
 
 ## 5. Создать ключ подписи
 
-Ключ должен лежать в корне проекта и оставаться одним и тем же для всех будущих обновлений.
+Для существующей установки скопируйте прежний `signingkey.jks` в `extensions/`: новый ключ создавать нельзя. Следующая команда нужна только для первой установки.
+
+Ключ должен лежать в `extensions/` и оставаться одним и тем же для всех будущих обновлений.
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 keytool -genkeypair -v \
   -keystore signingkey.jks \
   -alias nsfw-ext \
@@ -118,7 +120,7 @@ source ~/.nsfw-ext.env
 ## 7. Первая локальная сборка
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 source ~/.bashrc
 source ~/.nsfw-ext.env
 ./scripts/build_repo.sh
@@ -143,22 +145,23 @@ python3 -m http.server 8000 --directory repo
 Если remote уже настроен:
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 git push origin main
 ```
 
 Если ещё не настроен:
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 gh auth login
-gh repo create Georgvadis/nsfw-ext --public --source=. --remote=origin --push
+git clone https://github.com/Georgvadis/tachimanga-tools.git
+cd tachimanga-tools/extensions
 ```
 
 ## 9. Первый релиз в gh-pages
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 source ~/.bashrc
 source ~/.nsfw-ext.env
 ./scripts/release_repo.sh
@@ -168,7 +171,7 @@ source ~/.nsfw-ext.env
 
 1. собирает APK
 2. генерирует `repo/`
-3. создаёт или обновляет ветку `gh-pages`
+3. обновляет существующую ветку `gh-pages` в `Georgvadis/nsfw-ext`
 4. пушит её в GitHub
 
 ## 10. Включить GitHub Pages
@@ -185,7 +188,7 @@ source ~/.nsfw-ext.env
 После публикации репозиторий расширений будет доступен по адресу:
 
 ```text
-https://georgvadis.github.io/nsfw-ext/index.min.json
+https://georgvadis.github.io/Nsfw-ext/index.min.json
 ```
 
 ## 11. Подключить репозиторий в Tachimanga
@@ -196,7 +199,7 @@ https://georgvadis.github.io/nsfw-ext/index.min.json
 2. добавьте URL:
 
 ```text
-https://georgvadis.github.io/nsfw-ext/index.min.json
+https://georgvadis.github.io/Nsfw-ext/index.min.json
 ```
 
 Если Pages ещё не поднялись или приложение ругается, временный fallback:

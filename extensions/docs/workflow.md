@@ -30,7 +30,7 @@ extVersionCode = 28
 Полный релиз:
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 source ~/.bashrc
 source ~/.nsfw-ext.env
 ./scripts/release_repo.sh
@@ -59,9 +59,9 @@ source ~/.nsfw-ext.env
 
 `scripts/publish_pages.sh`
 
-- синхронизирует содержимое `repo/` в отдельный worktree
+- синхронизирует содержимое `repo/` в отдельную копию ветки `gh-pages` репозитория `nsfw-ext`
 - коммитит изменения в ветку `gh-pages`
-- пушит `gh-pages` в `origin`
+- пушит `gh-pages` в `Georgvadis/nsfw-ext`, сохраняя адрес обновлений
 
 `scripts/release_repo.sh`
 
@@ -73,8 +73,8 @@ source ~/.nsfw-ext.env
 Проверьте, что открываются:
 
 ```text
-https://georgvadis.github.io/nsfw-ext/index.min.json
-https://georgvadis.github.io/nsfw-ext/index.html
+https://georgvadis.github.io/Nsfw-ext/index.min.json
+https://georgvadis.github.io/Nsfw-ext/index.html
 ```
 
 Либо fallback:
@@ -106,7 +106,7 @@ https://raw.githubusercontent.com/Georgvadis/nsfw-ext/gh-pages/index.min.json
 ## Минимальный чеклист перед каждым релизом
 
 ```bash
-cd /srv/data/projects/nsfw-ext
+cd /srv/storage-1/projects/tachimanga-tools/extensions
 source ~/.bashrc
 source ~/.nsfw-ext.env
 ./scripts/release_repo.sh
