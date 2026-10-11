@@ -171,14 +171,14 @@ source ~/.nsfw-ext.env
 
 1. собирает APK
 2. генерирует `repo/`
-3. обновляет существующую ветку `gh-pages` в `Georgvadis/nsfw-ext`
+3. обновляет существующую ветку `gh-pages` в `Georgvadis/tachimanga-tools`
 4. пушит её в GitHub
 
 ## 10. Включить GitHub Pages
 
 На GitHub:
 
-1. откройте репозиторий `Georgvadis/nsfw-ext`
+1. откройте репозиторий `Georgvadis/tachimanga-tools`
 2. перейдите в `Settings -> Pages`
 3. выберите `Deploy from a branch`
 4. выберите ветку `gh-pages`
@@ -188,7 +188,7 @@ source ~/.nsfw-ext.env
 После публикации репозиторий расширений будет доступен по адресу:
 
 ```text
-https://georgvadis.github.io/Nsfw-ext/index.min.json
+https://georgvadis.github.io/tachimanga-tools/index.min.json
 ```
 
 ## 11. Подключить репозиторий в Tachimanga
@@ -199,13 +199,13 @@ https://georgvadis.github.io/Nsfw-ext/index.min.json
 2. добавьте URL:
 
 ```text
-https://georgvadis.github.io/Nsfw-ext/index.min.json
+https://georgvadis.github.io/tachimanga-tools/index.min.json
 ```
 
 Если Pages ещё не поднялись или приложение ругается, временный fallback:
 
 ```text
-https://raw.githubusercontent.com/Georgvadis/nsfw-ext/gh-pages/index.min.json
+https://raw.githubusercontent.com/Georgvadis/tachimanga-tools/gh-pages/index.min.json
 ```
 
 ## 12. Что важно не сломать
@@ -214,4 +214,4 @@ https://raw.githubusercontent.com/Georgvadis/nsfw-ext/gh-pages/index.min.json
 - не теряйте `signingkey.jks`
 - не меняйте ключ подписи между релизами
 - не забывайте повышать `extVersionCode`
-- если в `Tachimanga` уже стоят старые версии этих же расширений из другого репозитория, лучше удалить их перед первой установкой ваших сборок
+- при переносе репозитория с тем же ключом подписи переустанавливать расширения не нужно; достаточно заменить адрес репозитория

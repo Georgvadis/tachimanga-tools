@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PUBLISH_DIR="${PUBLISH_DIR:-$ROOT_DIR/../.cache/extension-pages}"
-PAGES_URL="${PAGES_REPOSITORY_URL:-https://github.com/Georgvadis/nsfw-ext.git}"
+PUBLISH_DIR="${PUBLISH_DIR:-$ROOT_DIR/../.cache/tachimanga-pages}"
+PAGES_URL="${PAGES_REPOSITORY_URL:-https://github.com/Georgvadis/tachimanga-tools.git}"
 BRANCH_NAME="${PAGES_BRANCH:-gh-pages}"
 COMMIT_MESSAGE="${PAGES_COMMIT_MESSAGE:-Publish extension repo}"
 

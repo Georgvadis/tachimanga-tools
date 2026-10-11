@@ -16,7 +16,7 @@ source ~/.nsfw-ext.env
 После публикации URL репозитория:
 
 ```text
-https://georgvadis.github.io/Nsfw-ext/index.min.json
+https://georgvadis.github.io/tachimanga-tools/index.min.json
 ```
 
 ## Основные команды
@@ -50,4 +50,4 @@ https://georgvadis.github.io/Nsfw-ext/index.min.json
 - для обновлений нужно всегда использовать один и тот же ключ подписи
 - перед каждым релизом повышайте `extVersionCode` в нужном расширении
 
-Исходники развиваются в `Georgvadis/tachimanga-tools`. Публикация готовых файлов остаётся в `Georgvadis/nsfw-ext`, ветка `gh-pages`; адрес обновлений сохранён. Подробности: [миграция](../docs/migration.md).
+Исходники развиваются в `Georgvadis/tachimanga-tools`. Готовые файлы также публикуются в `Georgvadis/tachimanga-tools`, ветка `gh-pages`; в TachiManga нужно заменить старую ссылку новой. Подробности: [миграция](../docs/migration.md).

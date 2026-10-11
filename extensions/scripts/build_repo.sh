@@ -109,7 +109,7 @@ main() {
     fi
 
     local repo_website
-    repo_website="${REPO_WEBSITE:-https://georgvadis.github.io/Nsfw-ext}"
+    repo_website="${REPO_WEBSITE:-https://georgvadis.github.io/tachimanga-tools}"
     repo_website="${repo_website:-http://127.0.0.1:8000}"
 
     download_inspector

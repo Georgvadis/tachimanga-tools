@@ -59,9 +59,9 @@ source ~/.nsfw-ext.env
 
 `scripts/publish_pages.sh`
 
-- синхронизирует содержимое `repo/` в отдельную копию ветки `gh-pages` репозитория `nsfw-ext`
+- синхронизирует содержимое `repo/` в отдельную копию ветки `gh-pages` репозитория `tachimanga-tools`
 - коммитит изменения в ветку `gh-pages`
-- пушит `gh-pages` в `Georgvadis/nsfw-ext`, сохраняя адрес обновлений
+- пушит `gh-pages` в `Georgvadis/tachimanga-tools`, используя новый адрес обновлений
 
 `scripts/release_repo.sh`
 
@@ -73,14 +73,14 @@ source ~/.nsfw-ext.env
 Проверьте, что открываются:
 
 ```text
-https://georgvadis.github.io/Nsfw-ext/index.min.json
-https://georgvadis.github.io/Nsfw-ext/index.html
+https://georgvadis.github.io/tachimanga-tools/index.min.json
+https://georgvadis.github.io/tachimanga-tools/index.html
 ```
 
 Либо fallback:
 
 ```text
-https://raw.githubusercontent.com/Georgvadis/nsfw-ext/gh-pages/index.min.json
+https://raw.githubusercontent.com/Georgvadis/tachimanga-tools/gh-pages/index.min.json
 ```
 
 ## Частые проблемы

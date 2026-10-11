@@ -32,13 +32,13 @@ source ~/.nsfw-ext.env
 
 Android SDK и Java должны быть доступны в окружении. [Настройка](extensions/docs/setup-ubuntu.md), [релизы](extensions/docs/workflow.md).
 
-Адрес репозитория в приложении остаётся прежним:
+Адрес репозитория расширений в приложении:
 
 ```text
-https://georgvadis.github.io/Nsfw-ext/index.min.json
+https://georgvadis.github.io/tachimanga-tools/index.min.json
 ```
 
-Исходники находятся здесь; готовые расширения публикуются в ветку `gh-pages` старого `Georgvadis/nsfw-ext`. Сборка и публикация остаются независимыми от Python-утилит.
+Исходники находятся здесь; готовые расширения публикуются в ветку `gh-pages` этого же репозитория. Сборка и публикация остаются независимыми от Python-утилит. При переносе добавьте новый адрес в TachiManga, проверьте список расширений, затем удалите старый адрес.
 
 ## Проверки
 
