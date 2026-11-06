@@ -55,4 +55,4 @@ bash -n extensions/scripts/build_repo.sh extensions/scripts/publish_pages.sh ext
 ## Инструкции для агентов
 
 Общие для Claude Code и Codex правила проекта — [AGENTS.md](AGENTS.md).
-`CLAUDE.md` ссылается на этот файл; обновлять нужно один источник.
+`CLAUDE.md` импортирует этот файл через `@AGENTS.md`; обновлять нужно один источник.
