@@ -51,3 +51,8 @@ bash -n extensions/scripts/build_repo.sh extensions/scripts/publish_pages.sh ext
 ## Локальные данные
 
 Бэкапы, результаты, cookies, ключ подписи и кэши не входят в Git. После клонирования их нужно добавить локально. [Миграция и сохранение истории](docs/migration.md).
+
+## Инструкции для агентов
+
+Общие для Claude Code и Codex правила проекта — [AGENTS.md](AGENTS.md).
+`CLAUDE.md` ссылается на этот файл; обновлять нужно один источник.
